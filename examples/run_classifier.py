@@ -754,6 +754,8 @@ def main():
     log_filename = os.path.join(args.output_dir, full_run_name + '.log')
     result_txt_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.txt')
     result_json_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.json')
+    # Make the output directory
+    utils.ensure_dir(args.output_dir)
 
     # validate cmd-line args, and overwrite some of the cmd-line args ("dummy" args) to make launching simpler
     assert args.freeze_embeddings or args.compresstype == 'nocompress', 'Can only do compression if freezing embeddings.'
