@@ -745,12 +745,12 @@ def main():
     }
 
     # Set up directories and run-names
-    args.data_dir = os.path.join(args.data_dir, upper_case_tasks[args.task])
+    args.data_dir = os.path.join(args.data_dir, upper_case_tasks[args.task_name])
     args.rungroup = '{}-{}'.format(utils.get_date_str(), args.rungroup)
     short_run_name = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
         args.freeze_embeddings, args.compresstype, args.bitrate, args.seed)
-    full_run_name = '{}_task,{}_{}'.format(args.rungroup, args.task, short_run_name)
-    args.output_dir = os.path.join(args.output_dir, args.task, args.rungroup, short_run_name)
+    full_run_name = '{}_task,{}_{}'.format(args.rungroup, args.task_name, short_run_name)
+    args.output_dir = os.path.join(args.output_dir, args.task_name, args.rungroup, short_run_name)
     log_filename = os.path.join(args.output_dir, full_run_name + '.log')
     result_txt_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.txt')
     result_json_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.json')
@@ -774,7 +774,7 @@ def main():
     # Log to file in output directory as well as to stdout.
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+                        level = logging.DEBUG,
                         handlers=[
                             logging.FileHandler(log_filename, mode='w'),
                             logging.StreamHandler()])
@@ -797,13 +797,7 @@ def main():
     if not args.do_train and not args.do_eval:
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-
     task_name = args.task_name.lower()
-
     if task_name not in processors:
         raise ValueError("Task not found: %s" % (task_name))
 
