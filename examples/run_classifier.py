@@ -39,6 +39,9 @@ from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WE
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification, BertConfig
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
+from smallfry import compress
+from smallfry import utils
+
 
 logger = logging.getLogger(__name__)
 
@@ -560,32 +563,88 @@ def compute_metrics(task_name, preds, labels):
     else:
         raise KeyError(task_name)
 
+def compress_embeddings(X, b, compress_type, seed):
+    X = X.numpy()
+    logger.info('Beginning to compress embeddings')
+    if compress_type == 'uniform':
+        Xq, frob_squared_error, elapsed = compress.compress_uniform(X, b, adaptive_range=True)
+    elif compress_type == 'kmeans':
+        Xq, frob_squared_error, elapsed = compress.compress_kmeans(X, b, random_seed=seed)
+    elif compress_type == 'pca':
+        pca_dim = int(X.shape[1] * b / 32.0)
+        Xq, frob_squared_error, elapsed = compress.compress_pca(X, pca_dim, keep_v=True)
+    else:
+        raise Exception('Other compress types not yet supported.')
+    logger.info('Done compressing embeddings. Elapsed = {}, Frob-squared-error = {}'.format(elapsed, frob_squared_error))
+    return torch.from_numpy(Xq), frob_squared_error, elapsed
 
 def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
-    parser.add_argument("--data_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                        "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
-                        "bert-base-multilingual-cased, bert-base-chinese.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
                         required=True,
                         help="The name of the task to train.")
-    parser.add_argument("--output_dir",
+    parser.add_argument("--rungroup",
                         default=None,
                         type=str,
                         required=True,
-                        help="The output directory where the model predictions and checkpoints will be written.")
+                        help="The run group for organizing results.")
 
-    ## Other parameters
+    ## Important parameters
+    parser.add_argument("--bert_model",
+                        default="bert-base-uncased",
+                        type=str,
+                        choices=["bert-base-uncased", "bert-large-uncased", "bert-base-cased", "bert-large-cased",
+                                 "bert-base-multilingual-uncased", "bert-base-multilingual-cased", "bert-base-chinese"],
+                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
+                             "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
+                             "bert-base-multilingual-cased, bert-base-chinese.")
+    parser.add_argument("--data_dir",
+                        default='/proj/smallfry/glue_data',
+                        type=str,
+                        help="The base directory of the input data. Data files should be under data_dir/task-name folder.")
+    parser.add_argument("--output_dir",
+                        default='/proj/smallfry/results/glue/',
+                        type=str,
+                        help="The base directory for where the model predictions and checkpoints will be written. "
+                             "Results will be written to output_dir/task-name/run-group/run-name folder.")
+    parser.add_argument('--seed',
+                        type=int,
+                        default=1,
+                        help="random seed for initialization")
+
+    # Compression parameters
+    parser.add_argument('--freeze_embeddings',
+                        action='store_true',
+                        help="Specifies if to freeze the WordPiece embeddings in the BERT model during training.")
+    parser.add_argument('--compresstype',
+                        type=str,
+                        default='nocompress',
+                        choices=['nocompress','uniform','kmeans','pca','dca','tt'],
+                        help='Name of compression method to use.')
+    parser.add_argument('--bitrate',
+                        type=float,
+                        default=32,
+                        help='The number of bits per entry of embedding matrix.')
+
+    # THESE ARE NOW DUMMY COMMAND-LINE ARGS, WHICH I OVERWRITE BELOW
+    # do_lower_case gets automatically set based on whether bert_model is cased/uncased.
+    # do_train and do_eval are always set to True.
+    parser.add_argument("--do_lower_case",
+                        action='store_true',
+                        help="Set this flag if you are using an uncased model.")
+    parser.add_argument("--do_train",
+                        action='store_true',
+                        help="Whether to run training.")
+    parser.add_argument("--do_eval",
+                        action='store_true',
+                        help="Whether to run eval on the dev set.")
+    ### END OF DUMMY COMMAND-LINE ARGS ###
+
+    # Other parameters
     parser.add_argument("--cache_dir",
                         default="",
                         type=str,
@@ -596,15 +655,6 @@ def main():
                         help="The maximum total input sequence length after WordPiece tokenization. \n"
                              "Sequences longer than this will be truncated, and sequences shorter \n"
                              "than this will be padded.")
-    parser.add_argument("--do_train",
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument("--do_eval",
-                        action='store_true',
-                        help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,
@@ -633,10 +683,6 @@ def main():
                         type=int,
                         default=-1,
                         help="local_rank for distributed training on gpus")
-    parser.add_argument('--seed',
-                        type=int,
-                        default=42,
-                        help="random seed for initialization")
     parser.add_argument('--gradient_accumulation_steps',
                         type=int,
                         default=1,
@@ -651,6 +697,7 @@ def main():
                              "Positive power of 2: static loss scaling value.\n")
     parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
+
     args = parser.parse_args()
 
     if args.server_ip and args.server_port:
@@ -685,6 +732,35 @@ def main():
         "wnli": "classification",
     }
 
+    upper_case_tasks = {
+        "cola": "CoLA",
+        "mnli": "MNLI",
+        "mrpc": "MRPC",
+        "sst-2": "SST-2",
+        "sts-b": "STS-B",
+        "qqp": "QQP",
+        "qnli": "QNLI",
+        "rte": "RTI",
+        "wnli": "WNLI",
+    }
+
+    # Set up directories and run-names
+    args.data_dir = os.path.join(args.data_dir, upper_case_tasks[args.task])
+    args.rungroup = '{}-{}'.format(utils.get_date_str(), args.rungroup)
+    short_run_name = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
+        args.freeze_embeddings, args.compresstype, args.bitrate, args.seed)
+    full_run_name = '{}_task,{}_{}'.format(args.rungroup, args.task, short_run_name)
+    args.output_dir = os.path.join(args.output_dir, args.task, args.rungroup, short_run_name)
+    log_filename = os.path.join(args.output_dir, full_run_name + '.log')
+    result_txt_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.txt')
+    result_json_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.json')
+
+    # validate cmd-line args, and overwrite some of the cmd-line args ("dummy" args) to make launching simpler
+    assert args.freeze_embeddings or args.compresstype == 'nocompress', 'Can only do compression if freezing embeddings.'
+    args.do_lower_case = 'uncased' in args.bert_model
+    args.do_train = True
+    args.do_eval = True
+
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -695,9 +771,13 @@ def main():
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.distributed.init_process_group(backend='nccl')
 
+    # Log to file in output directory as well as to stdout.
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
+                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+                        handlers=[
+                            logging.FileHandler(log_filename, mode='w'),
+                            logging.StreamHandler()])
 
     logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
         device, n_gpu, bool(args.local_rank != -1), args.fp16))
@@ -749,6 +829,20 @@ def main():
     model = BertForSequenceClassification.from_pretrained(args.bert_model,
               cache_dir=cache_dir,
               num_labels=num_labels)
+    if args.freeze_embeddings:
+        # "freeze" WordPiece embbedings by setting requires_grad to False.
+        model.bert.embeddings.word_embeddings.weight.requires_grad = False
+        # perform compression of the WordPiece embeddings.
+        if args.compresstype != 'nocompress':
+            assert args.bitrate < 32, 'if compressing, must specify bitrate < 32.'
+            X = model.bert.embeddings.word_embeddings.weight
+            b = args.bitrate
+            Xq,_,elapsed = compress_embeddings(X, b, args.compresstype, args.seed)
+            # copy compressed WordPiece embeddings into the BERT model.
+            model.bert.embeddings.word_embeddings.weight.copy_(Xq)
+            # Measure compression quality (reconstruction error, PIP, deltas, overlap).
+            compression_results = utils.compute_basic_compression_results(X.numpy(), Xq.numpy())
+            compression_results['elapsed'] = elapsed
     if args.fp16:
         model.half()
     model.to(device)
@@ -945,12 +1039,16 @@ def main():
         result['global_step'] = global_step
         result['loss'] = loss
 
-        output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
+        with open(result_txt_filename, "w") as writer:
             logger.info("***** Eval results *****")
             for key in sorted(result.keys()):
                 logger.info("  %s = %s", key, str(result[key]))
                 writer.write("%s = %s\n" % (key, str(result[key])))
+
+        # Add compression results, and also write results to json file
+        if args.compresstype != 'nocompress':
+            result['compression-results'] = compression_results
+        utils.save_to_json(result, result_json_filename)
 
         # hack for MNLI-MM
         if task_name == "mnli":
