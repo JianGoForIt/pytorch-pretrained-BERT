@@ -564,7 +564,6 @@ def compute_metrics(task_name, preds, labels):
         raise KeyError(task_name)
 
 def compress_embeddings(X, b, compress_type, seed):
-    X = X.numpy()
     logger.info('Beginning to compress embeddings')
     if compress_type == 'uniform':
         Xq, frob_squared_error, elapsed = compress.compress_uniform(X, b, adaptive_range=True)
@@ -576,7 +575,16 @@ def compress_embeddings(X, b, compress_type, seed):
     else:
         raise Exception('Other compress types not yet supported.')
     logger.info('Done compressing embeddings. Elapsed = {}, Frob-squared-error = {}'.format(elapsed, frob_squared_error))
-    return torch.from_numpy(Xq), frob_squared_error, elapsed
+    return Xq, frob_squared_error, elapsed
+
+def init_logging(log_filename):
+    # Log to file in output directory as well as to stdout.
+    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                        datefmt = '%m/%d/%Y %H:%M:%S',
+                        level = logging.DEBUG,
+                        handlers=[
+                            logging.FileHandler(log_filename, mode='w'),
+                            logging.StreamHandler()])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -595,7 +603,7 @@ def main():
 
     ## Important parameters
     parser.add_argument("--bert_model",
-                        default="bert-base-uncased",
+                        default="bert-base-cased",
                         type=str,
                         choices=["bert-base-uncased", "bert-large-uncased", "bert-base-cased", "bert-large-cased",
                                  "bert-base-multilingual-uncased", "bert-base-multilingual-cased", "bert-base-chinese"],
@@ -744,24 +752,42 @@ def main():
         "wnli": "WNLI",
     }
 
-    # Set up directories and run-names
+    ########## BEGIN INITIALIZATION CODE (BY AVNER) ##########
+    # 1) Set up run directory and run names
+    config_orig = vars(args)
     args.data_dir = os.path.join(args.data_dir, upper_case_tasks[args.task_name])
     args.rungroup = '{}-{}'.format(utils.get_date_str(), args.rungroup)
     short_run_name = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
         args.freeze_embeddings, args.compresstype, args.bitrate, args.seed)
     full_run_name = '{}_task,{}_{}'.format(args.rungroup, args.task_name, short_run_name)
     args.output_dir = os.path.join(args.output_dir, args.task_name, args.rungroup, short_run_name)
-    log_filename = os.path.join(args.output_dir, full_run_name + '.log')
-    result_txt_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.txt')
-    result_json_filename = os.path.join(args.output_dir, full_run_name + '_eval_results.json')
-    # Make the output directory
-    utils.ensure_dir(args.output_dir)
+    utils.ensure_dir(args.output_dir) # Make the output directory if it doesn't exist
 
-    # validate cmd-line args, and overwrite some of the cmd-line args ("dummy" args) to make launching simpler
+    # 2) validate cmd-line args, and overwrite some of the cmd-line args ("dummy" args) to make launching simpler
     assert args.freeze_embeddings or args.compresstype == 'nocompress', 'Can only do compression if freezing embeddings.'
     args.do_lower_case = 'uncased' in args.bert_model
     args.do_train = True
     args.do_eval = True
+
+    # 3) Add important entries into final config dictionary
+    config_final = vars(args)
+    git_hash, git_diff = utils.get_git_hash_and_diff(log=False)
+    config_final['git-hash'] = git_hash
+    config_final['git-diff'] = git_diff
+    config_final['full-run-name'] = full_run_name
+    config_final['short-run-name'] = short_run_name
+
+    # 4) Create function which can generate nice filenames
+    def get_filename(suffix, dr=args.output_dir, prefix=full_run_name):
+        return os.path.join(dr, prefix + suffix)
+
+    # 5) save the original config, and the final config.
+    utils.save_to_json(config_orig, get_filename('_orig_config.json'))
+    utils.save_to_json(config_final, get_filename('_final_config.json'))
+
+    # 6) initialize the logger
+    init_logging(get_filename('.log'))
+    ########## END INITIALIZATION CODE (BY AVNER) ##########
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -772,14 +798,6 @@ def main():
         n_gpu = 1
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.distributed.init_process_group(backend='nccl')
-
-    # Log to file in output directory as well as to stdout.
-    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.DEBUG,
-                        handlers=[
-                            logging.FileHandler(log_filename, mode='w'),
-                            logging.StreamHandler()])
 
     logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
         device, n_gpu, bool(args.local_rank != -1), args.fp16))
@@ -825,20 +843,29 @@ def main():
     model = BertForSequenceClassification.from_pretrained(args.bert_model,
               cache_dir=cache_dir,
               num_labels=num_labels)
+
+    ###### BEGIN CODE TO COMPRESS EMBEDDINGS (BY AVNER) #######
+    # 1) Save original embeddings to disk
+    X = model.bert.embeddings.word_embeddings.weight.numpy().copy()
+    dummy_word_list = ['x'] * X.shape[0]
+    utils.save_embeddings(get_filename('_orig_embeddings.txt'), X, dummy_word_list)
+    Xq = X
+    # 2) Freeze and perhaps compress embeddings
     if args.freeze_embeddings:
         # "freeze" WordPiece embbedings by setting requires_grad to False.
         model.bert.embeddings.word_embeddings.weight.requires_grad = False
         # perform compression of the WordPiece embeddings.
         if args.compresstype != 'nocompress':
             assert args.bitrate < 32, 'if compressing, must specify bitrate < 32.'
-            X = model.bert.embeddings.word_embeddings.weight
-            b = args.bitrate
-            Xq,_,elapsed = compress_embeddings(X, b, args.compresstype, args.seed)
+            Xq,_,elapsed = compress_embeddings(X, args.bitrate, args.compresstype, args.seed)
             # copy compressed WordPiece embeddings into the BERT model.
-            model.bert.embeddings.word_embeddings.weight.copy_(Xq)
+            model.bert.embeddings.word_embeddings.weight.copy_(torch.from_numpy(Xq))
             # Measure compression quality (reconstruction error, PIP, deltas, overlap).
-            compression_results = utils.compute_basic_compression_results(X.numpy(), Xq.numpy())
+            compression_results = utils.compute_basic_compression_results(X, Xq)
             compression_results['elapsed'] = elapsed
+    utils.save_embeddings(get_filename('_compressed_embeddings.txt'), Xq, dummy_word_list)
+    ###### END CODE TO COMPRESS EMBEDDINGS (BY AVNER) #######
+
     if args.fp16:
         model.half()
     model.to(device)
@@ -952,6 +979,10 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
 
+    if args.freeze_embeddings:
+        # Assert that after training has completed, embeddings didn't change if args.freeze_embeddings is True
+        assert np.array_equal(Xq, model.bert.embeddings.word_embeddings.weight.numpy()), 'Embeddings changed during training.'
+
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         # Save a trained model, configuration and tokenizer
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
@@ -1035,7 +1066,7 @@ def main():
         result['global_step'] = global_step
         result['loss'] = loss
 
-        with open(result_txt_filename, "w") as writer:
+        with open(get_filename('_eval_results.txt'), "w") as writer:
             logger.info("***** Eval results *****")
             for key in sorted(result.keys()):
                 logger.info("  %s = %s", key, str(result[key]))
@@ -1044,7 +1075,7 @@ def main():
         # Add compression results, and also write results to json file
         if args.compresstype != 'nocompress':
             result['compression-results'] = compression_results
-        utils.save_to_json(result, result_json_filename)
+        utils.save_to_json(result, get_filename('_eval_results.json'))
 
         # hack for MNLI-MM
         if task_name == "mnli":
