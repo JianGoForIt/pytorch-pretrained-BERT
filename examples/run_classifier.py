@@ -619,6 +619,10 @@ def main():
                         type=str,
                         help="The base directory for where the model predictions and checkpoints will be written. "
                              "Results will be written to output_dir/task-name/run-group/run-name folder.")
+    parser.add_argument("--git_repo_dir",
+                        default='/proj/smallfry/git/smallfry',
+                        type=str,
+                        help="The directory of the git repo. Used for getting git hash and diff strings.")
     parser.add_argument('--seed',
                         type=int,
                         default=1,
@@ -771,7 +775,7 @@ def main():
 
     # 3) Add important entries into final config dictionary
     config_final = vars(args)
-    git_hash, git_diff = utils.get_git_hash_and_diff(log=False)
+    git_hash, git_diff = utils.get_git_hash_and_diff(args.git_repo_dir, log=False)
     config_final['git-hash'] = git_hash
     config_final['git-diff'] = git_diff
     config_final['full-run-name'] = full_run_name
