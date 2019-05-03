@@ -674,7 +674,7 @@ def init_parser():
                         type=float,
                         help="The L2 regularization parameter (not applied to LayerNorm or bias parameters).")
     parser.add_argument("--num_train_epochs",
-                        default=10.0,
+                        default=3.0,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument('--debug', action='store_true',
