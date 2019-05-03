@@ -822,7 +822,7 @@ def freeze_and_compress_embeddings(model, device):
     dummy_word_list = ['x'] * X.shape[0]
     utils.save_embeddings(get_filename('_orig_embeddings.txt'), X, dummy_word_list)
     Xq = X
-    compression_results = None
+    compression_results = {}
     # Freeze and perhaps compress embeddings
     if config['freeze_embeddings']:
         # "freeze" WordPiece embbedings by setting requires_grad to False.
@@ -994,12 +994,9 @@ def main():
     optimizer = get_optimizer(model, len(train_examples))
 
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
-    Xq, compression_results = freeze_and_compress_embeddings(model, device)
+    Xq, full_results = freeze_and_compress_embeddings(model, device)
 
     train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
-    full_results = {}
-    if config['compresstype'] != 'nocompress':
-        full_results['compression-results'] = compression_results
     for epoch in trange(int(config['num_train_epochs']), desc="Epoch"):
         # Do one epoch of training
         model.train()
@@ -1023,6 +1020,8 @@ def main():
 
     # Save model, tokenizer, final results, and final config.
     save_model_and_tokenizer(model, tokenizer)
+    # Save results to config so that everything from this run is easiliy accessible in final_config.json
+    config['results'] = full_results
     utils.save_to_json(full_results, get_filename('_final_results.json'))
     utils.save_to_json(config, get_filename('_final_config.json'))
     logging.info('Run complete. Exiting compress.py main method.')
