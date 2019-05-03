@@ -44,7 +44,7 @@ from smallfry import utils
 
 
 logger = logging.getLogger(__name__)
-
+config = {}
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -537,7 +537,6 @@ def pearson_and_spearman(preds, labels):
         "corr": (pearson_corr + spearman_corr) / 2,
     }
 
-
 def compute_metrics(task_name, preds, labels):
     assert len(preds) == len(labels)
     if task_name == "cola":
@@ -563,6 +562,49 @@ def compute_metrics(task_name, preds, labels):
     else:
         raise KeyError(task_name)
 
+def get_processor(task_name):
+    processors = {
+        "cola": ColaProcessor,
+        "mnli": MnliProcessor,
+        "mnli-mm": MnliMismatchedProcessor,
+        "mrpc": MrpcProcessor,
+        "sst-2": Sst2Processor,
+        "sts-b": StsbProcessor,
+        "qqp": QqpProcessor,
+        "qnli": QnliProcessor,
+        "rte": RteProcessor,
+        "wnli": WnliProcessor,
+    }
+    return processors[task_name]
+
+def get_output_mode(task_name):
+    output_modes = {
+        "cola": "classification",
+        "mnli": "classification",
+        "mrpc": "classification",
+        "sst-2": "classification",
+        "sts-b": "regression",
+        "qqp": "classification",
+        "qnli": "classification",
+        "rte": "classification",
+        "wnli": "classification",
+    }
+    return output_modes[task_name]
+
+def get_upper_case_task_name(task_name):
+    upper_case_tasks = {
+        "cola": "CoLA",
+        "mnli": "MNLI",
+        "mrpc": "MRPC",
+        "sst-2": "SST-2",
+        "sts-b": "STS-B",
+        "qqp": "QQP",
+        "qnli": "QNLI",
+        "rte": "RTI",
+        "wnli": "WNLI",
+    }
+    return upper_case_tasks[task_name]
+
 def compress_embeddings(X, b, compress_type, seed):
     logger.info('Beginning to compress embeddings')
     if compress_type == 'uniform':
@@ -577,16 +619,7 @@ def compress_embeddings(X, b, compress_type, seed):
     logger.info('Done compressing embeddings. Elapsed = {}, Frob-squared-error = {}'.format(elapsed, frob_squared_error))
     return Xq, frob_squared_error, elapsed
 
-def init_logging(log_filename):
-    # Log to file in output directory as well as to stdout.
-    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.DEBUG,
-                        handlers=[
-                            logging.FileHandler(log_filename, mode='w'),
-                            logging.StreamHandler()])
-
-def main():
+def init_parser():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -594,6 +627,7 @@ def main():
                         default=None,
                         type=str,
                         required=True,
+                        choices=['cola', 'mnli', 'mrpc', 'sst-2', 'sts-b', 'qqp', 'qnli', 'rte', 'wnli'],
                         help="The name of the task to train.")
     parser.add_argument("--rungroup",
                         default=None,
@@ -627,6 +661,18 @@ def main():
                         type=int,
                         default=1,
                         help="random seed for initialization")
+    parser.add_argument("--checkpoint_metric",
+                        default='eval_loss_min',
+                        type=str,
+                        help="The metric to use to determine best performing epoch. Append '_min'/'_max' to metric name if minimium/maximum value determines best epoch.")
+    parser.add_argument("--learning_rate",
+                        default=5e-5,
+                        type=float,
+                        help="The initial learning rate for Adam.")
+    parser.add_argument("--num_train_epochs",
+                        default=3.0,
+                        type=float,
+                        help="Total number of training epochs to perform.")
 
     # Compression parameters
     parser.add_argument('--freeze_embeddings',
@@ -642,23 +688,9 @@ def main():
                         default=32,
                         help='The number of bits per entry of embedding matrix.')
 
-    # THESE ARE NOW DUMMY COMMAND-LINE ARGS, WHICH I OVERWRITE BELOW
-    # do_lower_case gets automatically set based on whether bert_model is cased/uncased.
-    # do_train and do_eval are always set to True.
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--do_train",
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument("--do_eval",
-                        action='store_true',
-                        help="Whether to run eval on the dev set.")
-    ### END OF DUMMY COMMAND-LINE ARGS ###
-
     # Other parameters
     parser.add_argument("--cache_dir",
-                        default="",
+                        default='/proj/smallfry/bert_pretrained_models',
                         type=str,
                         help="Where do you want to store the pre-trained models downloaded from s3")
     parser.add_argument("--max_seq_length",
@@ -675,14 +707,6 @@ def main():
                         default=8,
                         type=int,
                         help="Total batch size for eval.")
-    parser.add_argument("--learning_rate",
-                        default=5e-5,
-                        type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs",
-                        default=3.0,
-                        type=float,
-                        help="Total number of training epochs to perform.")
     parser.add_argument("--warmup_proportion",
                         default=0.1,
                         type=float,
@@ -691,463 +715,295 @@ def main():
     parser.add_argument("--no_cuda",
                         action='store_true',
                         help="Whether not to use CUDA when available")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=-1,
-                        help="local_rank for distributed training on gpus")
     parser.add_argument('--gradient_accumulation_steps',
                         type=int,
                         default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--fp16',
-                        action='store_true',
-                        help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--loss_scale',
-                        type=float, default=0,
-                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                             "0 (default value): dynamic loss scaling.\n"
-                             "Positive power of 2: static loss scaling value.\n")
-    parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
-    parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
+    return parser
 
-    args = parser.parse_args()
+def get_filename(suffix):
+    return os.path.join(config['output_dir'], config['full_run_name'] + suffix)
 
-    if args.server_ip and args.server_port:
-        # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
-        import ptvsd
-        print("Waiting for debugger attach")
-        ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
-        ptvsd.wait_for_attach()
+def validate_config():
+    if config['compresstype'] != 'nocompress' and not config['freeze_embeddings']:
+        raise ValueError('Can only do compression if freezing embeddings.')
 
-    processors = {
-        "cola": ColaProcessor,
-        "mnli": MnliProcessor,
-        "mnli-mm": MnliMismatchedProcessor,
-        "mrpc": MrpcProcessor,
-        "sst-2": Sst2Processor,
-        "sts-b": StsbProcessor,
-        "qqp": QqpProcessor,
-        "qnli": QnliProcessor,
-        "rte": RteProcessor,
-        "wnli": WnliProcessor,
-    }
+    if config['compresstype'] != 'nocompress' and config['bitrate'] >= 32:
+        raise ValueError('If compressing, must specify bitrate < 32.')
 
-    output_modes = {
-        "cola": "classification",
-        "mnli": "classification",
-        "mrpc": "classification",
-        "sst-2": "classification",
-        "sts-b": "regression",
-        "qqp": "classification",
-        "qnli": "classification",
-        "rte": "classification",
-        "wnli": "classification",
-    }
-
-    upper_case_tasks = {
-        "cola": "CoLA",
-        "mnli": "MNLI",
-        "mrpc": "MRPC",
-        "sst-2": "SST-2",
-        "sts-b": "STS-B",
-        "qqp": "QQP",
-        "qnli": "QNLI",
-        "rte": "RTI",
-        "wnli": "WNLI",
-    }
-
-    ########## BEGIN INITIALIZATION CODE (BY AVNER) ##########
-    # 1) Set up run directory and run names
-    config_orig = vars(args)
-    args.data_dir = os.path.join(args.data_dir, upper_case_tasks[args.task_name])
-    args.rungroup = '{}-{}'.format(utils.get_date_str(), args.rungroup)
-    short_run_name = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
-        args.freeze_embeddings, args.compresstype, args.bitrate, args.seed)
-    full_run_name = '{}_task,{}_{}'.format(args.rungroup, args.task_name, short_run_name)
-    args.output_dir = os.path.join(args.output_dir, args.task_name, args.rungroup, short_run_name)
-    utils.ensure_dir(args.output_dir) # Make the output directory if it doesn't exist
-
-    # 2) validate cmd-line args, and overwrite some of the cmd-line args ("dummy" args) to make launching simpler
-    assert args.freeze_embeddings or args.compresstype == 'nocompress', 'Can only do compression if freezing embeddings.'
-    args.do_lower_case = 'uncased' in args.bert_model
-    args.do_train = True
-    args.do_eval = True
-
-    # 3) Add important entries into final config dictionary
-    config_final = vars(args)
-    git_hash, git_diff = utils.get_git_hash_and_diff(args.git_repo_dir, log=False)
-    config_final['git-hash'] = git_hash
-    config_final['git-diff'] = git_diff
-    config_final['full-run-name'] = full_run_name
-    config_final['short-run-name'] = short_run_name
-
-    # 4) Create function which can generate nice filenames
-    def get_filename(suffix, dr=args.output_dir, prefix=full_run_name):
-        return os.path.join(dr, prefix + suffix)
-
-    # 5) save the original config, and the final config.
-    utils.save_to_json(config_orig, get_filename('_orig_config.json'))
-    utils.save_to_json(config_final, get_filename('_final_config.json'))
-
-    # 6) initialize the logger
-    init_logging(get_filename('.log'))
-    ########## END INITIALIZATION CODE (BY AVNER) ##########
-
-    if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        n_gpu = torch.cuda.device_count()
-    else:
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        n_gpu = 1
-        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.distributed.init_process_group(backend='nccl')
-
-    logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
-        device, n_gpu, bool(args.local_rank != -1), args.fp16))
-
-    if args.gradient_accumulation_steps < 1:
+    if config['gradient_accumulation_steps'] < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-                            args.gradient_accumulation_steps))
+                            config['gradient_accumulation_steps']))
 
-    args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
+def init_config(parser):
+    global config
+    config = vars(parser.parse_args())
+    orig_config = config.copy()
+    validate_config()
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    # 1) Set up run directory and run names
+    config['data_dir'] = os.path.join(config['data_dir'], get_upper_case_task_name(config['task_name']))
+    config['rungroup'] = '{}-{}'.format(utils.get_date_str(), config['rungroup'])
+    config['short_run_name'] = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
+        config['freeze_embeddings'], config['compresstype'], config['bitrate'], config['seed'])
+    config['full_run_name'] = '{}_task,{}_{}'.format(config['rungroup'], config['task_name'], config['short_run_name'])
+    config['output_dir'] = os.path.join(config['output_dir'], config['task_name'], config['rungroup'], config['short_run_name'])
+    utils.ensure_dir(config['output_dir']) # Make the output directory if it doesn't exist
+
+    # 2) Add important entries into final config dictionary
+    git_hash, git_diff = utils.get_git_hash_and_diff(config['git_repo_dir'], log=False)
+    config['git_hash'] = git_hash
+    config['git_diff'] = git_diff
+    config['train_batch_size'] = config['train_batch_size'] // config['gradient_accumulation_steps']
+
+    # 3) save the original config, and the current config.
+    utils.save_to_json(orig_config, get_filename('_orig_config.json'))
+    utils.save_to_json(config, get_filename('_config.json'))
+
+def init_logging(log_filename):
+    # Log to file in output directory as well as to stdout.
+    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                        datefmt = '%m/%d/%Y %H:%M:%S',
+                        level = logging.DEBUG,
+                        handlers=[
+                            logging.FileHandler(log_filename, mode='w'),
+                            logging.StreamHandler()])
+
+def init_random_seeds(seed, n_gpu):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     if n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed_all(seed)
 
-    if not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+def init():
+    parser = init_parser()
+    init_config(parser)
+    init_logging(get_filename('.log'))
+    device = torch.device('cuda' if torch.cuda.is_available() and not config['no_cuda'] else 'cpu')
+    n_gpu = torch.cuda.device_count()
+    init_random_seeds(config['seed'], n_gpu)
+    logger.info("device: {} n_gpu: {}".format(device, n_gpu))
+    return device, n_gpu
 
-    task_name = args.task_name.lower()
-    if task_name not in processors:
-        raise ValueError("Task not found: %s" % (task_name))
-
-    processor = processors[task_name]()
-    output_mode = output_modes[task_name]
-
+def get_data():
+    processor = get_processor(config['task_name'])()
+    train_examples = processor.get_train_examples(config['data_dir'])
+    eval_examples = processor.get_dev_examples(config['data_dir'])
     label_list = processor.get_labels()
-    num_labels = len(label_list)
+    return train_examples, eval_examples, label_list
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+def get_num_train_optimization_steps(num_train_examples):
+    num_train_optimization_steps = int(
+        num_train_examples / config['train_batch_size'] / config['gradient_accumulation_steps']) * config['num_train_epochs']
+    return num_train_optimization_steps
 
-    train_examples = None
-    num_train_optimization_steps = None
-    if args.do_train:
-        train_examples = processor.get_train_examples(args.data_dir)
-        num_train_optimization_steps = int(
-            len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
-        if args.local_rank != -1:
-            num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
-
-    # Prepare model
-    cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank))
-    model = BertForSequenceClassification.from_pretrained(args.bert_model,
-              cache_dir=cache_dir,
-              num_labels=num_labels)
-
-    ###### BEGIN CODE TO COMPRESS EMBEDDINGS (BY AVNER) #######
-    # 1) Save original embeddings to disk
-    X = model.bert.embeddings.word_embeddings.weight.numpy().copy()
-    dummy_word_list = ['x'] * X.shape[0]
-    utils.save_embeddings(get_filename('_orig_embeddings.txt'), X, dummy_word_list)
-    Xq = X
-    # 2) Freeze and perhaps compress embeddings
-    if args.freeze_embeddings:
-        # "freeze" WordPiece embbedings by setting requires_grad to False.
-        model.bert.embeddings.word_embeddings.weight.requires_grad = False
-        # perform compression of the WordPiece embeddings.
-        if args.compresstype != 'nocompress':
-            assert args.bitrate < 32, 'if compressing, must specify bitrate < 32.'
-            Xq,_,elapsed = compress_embeddings(X, args.bitrate, args.compresstype, args.seed)
-            # copy compressed WordPiece embeddings into the BERT model.
-            model.bert.embeddings.word_embeddings.weight.copy_(torch.from_numpy(Xq))
-            # Measure compression quality (reconstruction error, PIP, deltas, overlap).
-            compression_results = utils.compute_basic_compression_results(X, Xq)
-            compression_results['elapsed'] = elapsed
-    utils.save_embeddings(get_filename('_compressed_embeddings.txt'), Xq, dummy_word_list)
-    ###### END CODE TO COMPRESS EMBEDDINGS (BY AVNER) #######
-
-    if args.fp16:
-        model.half()
-    model.to(device)
-    if args.local_rank != -1:
-        try:
-            from apex.parallel import DistributedDataParallel as DDP
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
-
-        model = DDP(model)
-    elif n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-
-    # Prepare optimizer
+def get_optimizer(model, num_train_examples):
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
-    if args.fp16:
-        try:
-            from apex.optimizers import FP16_Optimizer
-            from apex.optimizers import FusedAdam
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+    optimizer = BertAdam(optimizer_grouped_parameters,
+                         lr=config['learning_rate'],
+                         warmup=config['warmup_proportion'],
+                         t_total=get_num_train_optimization_steps(num_train_examples))
+    return optimizer
 
-        optimizer = FusedAdam(optimizer_grouped_parameters,
-                              lr=args.learning_rate,
-                              bias_correction=False,
-                              max_grad_norm=1.0)
-        if args.loss_scale == 0:
-            optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
-        else:
-            optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
-        warmup_linear = WarmupLinearSchedule(warmup=args.warmup_proportion,
-                                             t_total=num_train_optimization_steps)
+def freeze_and_compress_embeddings(model):
+    X = model.bert.embeddings.word_embeddings.weight.numpy().copy()
+    dummy_word_list = ['x'] * X.shape[0]
+    utils.save_embeddings(get_filename('_orig_embeddings.txt'), X, dummy_word_list)
+    Xq = X
+    compression_results = None
+    # Freeze and perhaps compress embeddings
+    if config['freeze_embeddings']:
+        # "freeze" WordPiece embbedings by setting requires_grad to False.
+        model.bert.embeddings.word_embeddings.weight.requires_grad = False
+        # perform compression of the WordPiece embeddings.
+        if config['compresstype'] != 'nocompress':
+            Xq,_,elapsed = compress_embeddings(X, config['bitrate'], config['compresstype'], config['seed'])
+            # copy compressed WordPiece embeddings into the BERT model.
+            model.bert.embeddings.word_embeddings.weight.copy_(torch.from_numpy(Xq))
+            # Measure compression quality (reconstruction error, PIP, deltas, overlap).
+            compression_results = utils.compute_basic_compression_results(X, Xq)
+            compression_results['elapsed'] = elapsed
+    utils.save_embeddings(get_filename('_compressed_embeddings.txt'), Xq, dummy_word_list)
+    return Xq, compression_results
 
-    else:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
+def save_model_and_tokenizer(model, tokenizer):
+    # Save a trained model, configuration and tokenizer
+    model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
 
-    global_step = 0
-    nb_tr_steps = 0
+    # If we save using the predefined names, we can load using `from_pretrained`
+    output_model_file = os.path.join(config['output_dir'], WEIGHTS_NAME)
+    output_config_file = os.path.join(config['output_dir'], CONFIG_NAME)
+
+    torch.save(model_to_save.state_dict(), output_model_file)
+    model_to_save.config.to_json_file(output_config_file)
+    tokenizer.save_vocabulary(config['output_dir'])
+
+    # *** Avner removed the lines below. Unclear why they had this code in the original run_classifier.py. ***
+    # # Load a trained model and vocabulary that you have fine-tuned
+    # model = BertForSequenceClassification.from_pretrained(args.output_dir, num_labels=num_labels)
+    # tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
+
+def get_model(num_labels, device, n_gpu):
+    model = BertForSequenceClassification.from_pretrained(config['bert_model'],
+              cache_dir=config['cache_dir'],
+              num_labels=num_labels)
+    model.to(device)
+    if n_gpu > 1:
+        model = torch.nn.DataParallel(model)
+    return model
+
+def get_dataloader(examples, label_list, tokenizer, output_mode, train=True):
+    batch_size = config['train_batch_size'] if train else config['eval_batch_size']
+    features = convert_examples_to_features(
+        examples, label_list, config['max_seq_length'], tokenizer, output_mode)
+    logger.info("***** Running {} *****".format('training' if train else 'evaluation'))
+    logger.info("  Num examples = %d", len(examples))
+    logger.info("  Batch size = %d", batch_size)
+    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
+    dtype = torch.long if output_mode == "classification" else torch.float
+    all_label_ids = torch.tensor([f.label_id for f in features], dtype=dtype)
+    data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+    sampler = RandomSampler(data) if train else SequentialSampler(data)
+    return DataLoader(data, sampler=sampler, batch_size=batch_size), all_label_ids
+
+def run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, device, num_labels):
     tr_loss = 0
-    if args.do_train:
-        train_features = convert_examples_to_features(
-            train_examples, label_list, args.max_seq_length, tokenizer, output_mode)
-        logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_examples))
-        logger.info("  Batch size = %d", args.train_batch_size)
-        logger.info("  Num steps = %d", num_train_optimization_steps)
-        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
+    num_steps = 0
+    for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+        batch = tuple(t.to(device) for t in batch)
+        input_ids, input_mask, segment_ids, label_ids = batch
+
+        # define a new function to compute loss values for both output_modes
+        logits = model(input_ids, segment_ids, input_mask, labels=None)
 
         if output_mode == "classification":
-            all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
         elif output_mode == "regression":
-            all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.float)
+            loss_fct = MSELoss()
+            loss = loss_fct(logits.view(-1), label_ids.view(-1))
 
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        if args.local_rank == -1:
-            train_sampler = RandomSampler(train_data)
+        if n_gpu > 1:
+            loss = loss.mean() # mean() to average on multi-gpu.
+        if config['gradient_accumulation_steps'] > 1:
+            loss = loss / config['gradient_accumulation_steps']
+
+        loss.backward()
+        tr_loss += loss.item()
+        if (step + 1) % config['gradient_accumulation_steps'] == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            num_steps += 1
+    return tr_loss/num_steps
+
+def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, num_labels):
+    eval_loss = 0
+    num_steps = 0
+    preds = []
+
+    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+        input_ids = input_ids.to(device)
+        input_mask = input_mask.to(device)
+        segment_ids = segment_ids.to(device)
+        label_ids = label_ids.to(device)
+
+        with torch.no_grad():
+            logits = model(input_ids, segment_ids, input_mask, labels=None)
+
+        # create eval loss and other metric required by the task
+        if output_mode == "classification":
+            loss_fct = CrossEntropyLoss()
+            tmp_eval_loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
+        elif output_mode == "regression":
+            loss_fct = MSELoss()
+            tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
+        
+        eval_loss += tmp_eval_loss.mean().item()
+        num_steps += 1
+        if len(preds) == 0:
+            preds.append(logits.detach().cpu().numpy())
         else:
-            train_sampler = DistributedSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+            preds[0] = np.append(
+                preds[0], logits.detach().cpu().numpy(), axis=0)
 
+    eval_loss = eval_loss / num_steps
+    preds = preds[0]
+    if output_mode == "classification":
+        preds = np.argmax(preds, axis=1)
+    elif output_mode == "regression":
+        preds = np.squeeze(preds)
+    result = compute_metrics(config['task_name'], preds, eval_label_ids.numpy())
+    result['eval_loss'] = eval_loss
+    return result
+
+def update_full_results(full_results, result, epoch):
+    is_best_epoch = False
+    for k,v in result.items():
+        if k not in full_results:
+            full_results[k] = []
+        full_results[k].append(v)
+        if v == min(full_results[k]):
+            full_results[k + '_min'] = v
+            if k + '_min' == config['checkpoint_metric']:
+                is_best_epoch = True
+        if v == max(full_results[k]):
+            full_results[k + '_max'] = v
+            if k + '_max' == config['checkpoint_metric']:
+                is_best_epoch = True
+    if is_best_epoch:
+        full_results['checkpoint'] = result
+        full_results['best_epoch'] = epoch
+
+def main():
+    device, n_gpu = init()
+    train_examples, eval_examples, label_list = get_data()
+    output_mode = get_output_mode(config['task_name'])
+    tokenizer = BertTokenizer.from_pretrained(
+        config['bert_model'],
+        do_lower_case=('uncased' in config['bert_model'])
+    )
+
+    # Prepare model and optimizer
+    model = get_model(len(label_list), device, n_gpu)
+    optimizer = get_optimizer(model, len(train_examples))
+
+    # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
+    Xq, compression_results = freeze_and_compress_embeddings(model)
+
+    train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
+    full_results = {}
+    if config['compresstype'] != 'nocompress':
+        full_results['compression-results'] = compression_results
+    for epoch in trange(int(config['num_train_epochs']), desc="Epoch"):
+        # Do one epoch of training
         model.train()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            tr_loss = 0
-            nb_tr_examples, nb_tr_steps = 0, 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids = batch
+        tr_loss = run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, device, len(label_list))
 
-                # define a new function to compute loss values for both output_modes
-                logits = model(input_ids, segment_ids, input_mask, labels=None)
+        # Run evaluation
+        model.eval()
+        eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
+        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list))
+        result['train_loss'] = tr_loss
+        update_full_results(full_results, result, epoch)
+        utils.save_to_json(full_results, get_filename('_results.json'))
 
-                if output_mode == "classification":
-                    loss_fct = CrossEntropyLoss()
-                    loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
-                elif output_mode == "regression":
-                    loss_fct = MSELoss()
-                    loss = loss_fct(logits.view(-1), label_ids.view(-1))
-
-                if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-
-                if args.fp16:
-                    optimizer.backward(loss)
-                else:
-                    loss.backward()
-
-                tr_loss += loss.item()
-                nb_tr_examples += input_ids.size(0)
-                nb_tr_steps += 1
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16:
-                        # modify learning rate with special warm up BERT uses
-                        # if args.fp16 is False, BertAdam is used that handles this automatically
-                        lr_this_step = args.learning_rate * warmup_linear.get_lr(global_step/num_train_optimization_steps,
-                                                                                 args.warmup_proportion)
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = lr_this_step
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    global_step += 1
-
-    if args.freeze_embeddings:
-        # Assert that after training has completed, embeddings didn't change if args.freeze_embeddings is True
+    # Assert that after training has completed, embeddings didn't change if config['freeze_embeddings'] is True
+    if config['freeze_embeddings']:
         assert np.array_equal(Xq, model.bert.embeddings.word_embeddings.weight.numpy()), 'Embeddings changed during training.'
 
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        # Save a trained model, configuration and tokenizer
-        model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-
-        # If we save using the predefined names, we can load using `from_pretrained`
-        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
-        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-
-        torch.save(model_to_save.state_dict(), output_model_file)
-        model_to_save.config.to_json_file(output_config_file)
-        tokenizer.save_vocabulary(args.output_dir)
-
-        # Load a trained model and vocabulary that you have fine-tuned
-        model = BertForSequenceClassification.from_pretrained(args.output_dir, num_labels=num_labels)
-        tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
-    else:
-        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
-    model.to(device)
-
-    if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        eval_examples = processor.get_dev_examples(args.data_dir)
-        eval_features = convert_examples_to_features(
-            eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
-        logger.info("***** Running evaluation *****")
-        logger.info("  Num examples = %d", len(eval_examples))
-        logger.info("  Batch size = %d", args.eval_batch_size)
-        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-
-        if output_mode == "classification":
-            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
-        elif output_mode == "regression":
-            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.float)
-
-        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        # Run prediction for full data
-        eval_sampler = SequentialSampler(eval_data)
-        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
-
-        model.eval()
-        eval_loss = 0
-        nb_eval_steps = 0
-        preds = []
-
-        for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
-            input_ids = input_ids.to(device)
-            input_mask = input_mask.to(device)
-            segment_ids = segment_ids.to(device)
-            label_ids = label_ids.to(device)
-
-            with torch.no_grad():
-                logits = model(input_ids, segment_ids, input_mask, labels=None)
-
-            # create eval loss and other metric required by the task
-            if output_mode == "classification":
-                loss_fct = CrossEntropyLoss()
-                tmp_eval_loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
-            elif output_mode == "regression":
-                loss_fct = MSELoss()
-                tmp_eval_loss = loss_fct(logits.view(-1), label_ids.view(-1))
-            
-            eval_loss += tmp_eval_loss.mean().item()
-            nb_eval_steps += 1
-            if len(preds) == 0:
-                preds.append(logits.detach().cpu().numpy())
-            else:
-                preds[0] = np.append(
-                    preds[0], logits.detach().cpu().numpy(), axis=0)
-
-        eval_loss = eval_loss / nb_eval_steps
-        preds = preds[0]
-        if output_mode == "classification":
-            preds = np.argmax(preds, axis=1)
-        elif output_mode == "regression":
-            preds = np.squeeze(preds)
-        result = compute_metrics(task_name, preds, all_label_ids.numpy())
-        loss = tr_loss/global_step if args.do_train else None
-
-        result['eval_loss'] = eval_loss
-        result['global_step'] = global_step
-        result['loss'] = loss
-
-        with open(get_filename('_eval_results.txt'), "w") as writer:
-            logger.info("***** Eval results *****")
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
-
-        # Add compression results, and also write results to json file
-        if args.compresstype != 'nocompress':
-            result['compression-results'] = compression_results
-        utils.save_to_json(result, get_filename('_eval_results.json'))
-
-        # hack for MNLI-MM
-        if task_name == "mnli":
-            task_name = "mnli-mm"
-            processor = processors[task_name]()
-
-            if os.path.exists(args.output_dir + '-MM') and os.listdir(args.output_dir + '-MM') and args.do_train:
-                raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
-            if not os.path.exists(args.output_dir + '-MM'):
-                os.makedirs(args.output_dir + '-MM')
-
-            eval_examples = processor.get_dev_examples(args.data_dir)
-            eval_features = convert_examples_to_features(
-                eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
-            logger.info("***** Running evaluation *****")
-            logger.info("  Num examples = %d", len(eval_examples))
-            logger.info("  Batch size = %d", args.eval_batch_size)
-            all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-            all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-            all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
-
-            eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-            # Run prediction for full data
-            eval_sampler = SequentialSampler(eval_data)
-            eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
-
-            model.eval()
-            eval_loss = 0
-            nb_eval_steps = 0
-            preds = []
-
-            for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
-                input_ids = input_ids.to(device)
-                input_mask = input_mask.to(device)
-                segment_ids = segment_ids.to(device)
-                label_ids = label_ids.to(device)
-
-                with torch.no_grad():
-                    logits = model(input_ids, segment_ids, input_mask, labels=None)
-            
-                loss_fct = CrossEntropyLoss()
-                tmp_eval_loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
-            
-                eval_loss += tmp_eval_loss.mean().item()
-                nb_eval_steps += 1
-                if len(preds) == 0:
-                    preds.append(logits.detach().cpu().numpy())
-                else:
-                    preds[0] = np.append(
-                        preds[0], logits.detach().cpu().numpy(), axis=0)
-
-            eval_loss = eval_loss / nb_eval_steps
-            preds = preds[0]
-            preds = np.argmax(preds, axis=1)
-            result = compute_metrics(task_name, preds, all_label_ids.numpy())
-            loss = tr_loss/global_step if args.do_train else None
-
-            result['eval_loss'] = eval_loss
-            result['global_step'] = global_step
-            result['loss'] = loss
-
-            output_eval_file = os.path.join(args.output_dir + '-MM', "eval_results.txt")
-            with open(output_eval_file, "w") as writer:
-                logger.info("***** Eval results *****")
-                for key in sorted(result.keys()):
-                    logger.info("  %s = %s", key, str(result[key]))
-                    writer.write("%s = %s\n" % (key, str(result[key])))
+    # Save model, tokenizer, final results, and final config.
+    save_model_and_tokenizer(model, tokenizer)
+    utils.save_to_json(full_results, get_filename('_final_results.json'))
+    utils.save_to_json(config, get_filename('_final_config.json'))
+    logging.info('Run complete. Exiting compress.py main method.')
 
 if __name__ == "__main__":
     main()
