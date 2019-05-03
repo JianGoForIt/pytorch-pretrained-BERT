@@ -811,8 +811,8 @@ def get_optimizer(model, num_train_examples):
                          t_total=get_num_train_optimization_steps(num_train_examples))
     return optimizer
 
-def freeze_and_compress_embeddings(model):
-    X = model.bert.embeddings.word_embeddings.weight.numpy().copy()
+def freeze_and_compress_embeddings(model, device):
+    X = model.bert.embeddings.word_embeddings.weight.detach().cpu().numpy().copy()
     dummy_word_list = ['x'] * X.shape[0]
     utils.save_embeddings(get_filename('_orig_embeddings.txt'), X, dummy_word_list)
     Xq = X
@@ -825,7 +825,7 @@ def freeze_and_compress_embeddings(model):
         if config['compresstype'] != 'nocompress':
             Xq,_,elapsed = compress_embeddings(X, config['bitrate'], config['compresstype'], config['seed'])
             # copy compressed WordPiece embeddings into the BERT model.
-            model.bert.embeddings.word_embeddings.weight.copy_(torch.from_numpy(Xq))
+            model.bert.embeddings.word_embeddings.weight.copy_(torch.from_numpy(Xq.copy()).to(device))
             # Measure compression quality (reconstruction error, PIP, deltas, overlap).
             compression_results = utils.compute_basic_compression_results(X, Xq)
             compression_results['elapsed'] = elapsed
@@ -976,7 +976,7 @@ def main():
     optimizer = get_optimizer(model, len(train_examples))
 
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
-    Xq, compression_results = freeze_and_compress_embeddings(model)
+    Xq, compression_results = freeze_and_compress_embeddings(model, device)
 
     train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
     full_results = {}
@@ -997,7 +997,7 @@ def main():
 
     # Assert that after training has completed, embeddings didn't change if config['freeze_embeddings'] is True
     if config['freeze_embeddings']:
-        assert np.array_equal(Xq, model.bert.embeddings.word_embeddings.weight.numpy()), 'Embeddings changed during training.'
+        assert np.array_equal(Xq, model.bert.embeddings.word_embeddings.weight.detach().cpu().numpy()), 'Embeddings changed during training.'
 
     # Save model, tokenizer, final results, and final config.
     save_model_and_tokenizer(model, tokenizer)
