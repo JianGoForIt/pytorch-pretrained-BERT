@@ -670,7 +670,7 @@ def init_parser():
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=3.0,
+                        default=10.0,
                         type=float,
                         help="Total number of training epochs to perform.")
 
@@ -961,6 +961,20 @@ def update_full_results(full_results, result, epoch):
     if is_best_epoch:
         full_results['checkpoint'] = result
         full_results['best_epoch'] = epoch
+    return convert_numpy_to_float(full_results)
+
+def convert_numpy_to_float(obj):
+    if type(obj) in (np.float64, np.float32, float):
+        obj = float(obj)
+    elif type(obj) is list:
+        for i,x in enumerate(obj):
+            obj[i] = convert_numpy_to_float(x)
+    elif type(obj) is dict:
+        for k,v in obj.items():
+            obj[k] = convert_numpy_to_float(v)
+    else:
+        raise Exception('Unsupported type')
+    return obj
 
 def main():
     device, n_gpu = init()
@@ -985,14 +999,18 @@ def main():
     for epoch in trange(int(config['num_train_epochs']), desc="Epoch"):
         # Do one epoch of training
         model.train()
+        logger.info('Epoch #{}: Begin training'.format(epoch))
         tr_loss = run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, device, len(label_list))
+        logger.info('Epoch #{}: Finished training'.format(epoch))
 
         # Run evaluation
         model.eval()
+        logger.info('Epoch #{}: Begin evaluation'.format(epoch))
         eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
         result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list))
+        logger.info('Epoch #{}: Finished evaluation'.format(epoch))
         result['train_loss'] = tr_loss
-        update_full_results(full_results, result, epoch)
+        full_results = update_full_results(full_results, result, epoch)
         utils.save_to_json(full_results, get_filename('_results.json'))
 
     # Assert that after training has completed, embeddings didn't change if config['freeze_embeddings'] is True
