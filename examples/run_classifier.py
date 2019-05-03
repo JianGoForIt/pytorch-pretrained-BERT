@@ -669,10 +669,16 @@ def init_parser():
                         default=5e-5,
                         type=float,
                         help="The initial learning rate for Adam.")
+    parser.add_argument("--weight_decay",
+                        default=0.01,
+                        type=float,
+                        help="The L2 regularization parameter (not applied to LayerNorm or bias parameters).")
     parser.add_argument("--num_train_epochs",
                         default=10.0,
                         type=float,
                         help="Total number of training epochs to perform.")
+    parser.add_argument('--debug', action='store_true',
+        help='If true, can have local git changes when running experiments.')
 
     # Compression parameters
     parser.add_argument('--freeze_embeddings',
@@ -751,7 +757,7 @@ def init_config(parser):
     utils.ensure_dir(config['output_dir']) # Make the output directory if it doesn't exist
 
     # 2) Add important entries into final config dictionary
-    git_hash, git_diff = utils.get_git_hash_and_diff(config['git_repo_dir'], log=False)
+    git_hash, git_diff = utils.get_git_hash_and_diff(config['git_repo_dir'], log=False, debug=config['debug'])
     config['git_hash'] = git_hash
     config['git_diff'] = git_diff
     config['train_batch_size'] = config['train_batch_size'] // config['gradient_accumulation_steps']
@@ -802,7 +808,7 @@ def get_optimizer(model, num_train_examples):
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': config['weight_decay']},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
     optimizer = BertAdam(optimizer_grouped_parameters,
@@ -964,7 +970,7 @@ def update_full_results(full_results, result, epoch):
     return convert_numpy_to_float(full_results)
 
 def convert_numpy_to_float(obj):
-    if type(obj) in (np.float64, np.float32, float):
+    if type(obj) in (np.float64, np.float32):
         obj = float(obj)
     elif type(obj) is list:
         for i,x in enumerate(obj):
@@ -972,8 +978,6 @@ def convert_numpy_to_float(obj):
     elif type(obj) is dict:
         for k,v in obj.items():
             obj[k] = convert_numpy_to_float(v)
-    else:
-        raise Exception('Unsupported type')
     return obj
 
 def main():
