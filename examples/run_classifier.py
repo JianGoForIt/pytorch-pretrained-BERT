@@ -1020,10 +1020,10 @@ def main():
 
     # Save model, tokenizer, final results, and final config.
     save_model_and_tokenizer(model, tokenizer)
-    # Save results to config so that everything from this run is easiliy accessible in final_config.json
+    # Save results to config so that everything from this run is easiliy accessible in config_final.json
     config['results'] = full_results
-    utils.save_to_json(full_results, get_filename('_final_results.json'))
-    utils.save_to_json(config, get_filename('_final_config.json'))
+    utils.save_to_json(full_results, get_filename('_results_final.json'))
+    utils.save_to_json(config, get_filename('_config_final.json'))
     logging.info('Run complete. Exiting compress.py main method.')
 
 if __name__ == "__main__":
