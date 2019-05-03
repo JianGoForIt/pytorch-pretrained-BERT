@@ -750,8 +750,8 @@ def init_config(parser):
     # 1) Set up run directory and run names
     config['data_dir'] = os.path.join(config['data_dir'], get_upper_case_task_name(config['task_name']))
     config['rungroup'] = '{}-{}'.format(utils.get_date_str(), config['rungroup'])
-    config['short_run_name'] = 'freeze,{}_compresstype,{}_bitrate,{}_seed,{}'.format(
-        config['freeze_embeddings'], config['compresstype'], config['bitrate'], config['seed'])
+    config['short_run_name'] = 'freeze,{}_compresstype,{}_bitrate,{}_lr,{}_seed,{}'.format(
+        config['freeze_embeddings'], config['compresstype'], config['bitrate'], config['learning_rate'], config['seed'])
     config['full_run_name'] = '{}_task,{}_{}'.format(config['rungroup'], config['task_name'], config['short_run_name'])
     config['output_dir'] = os.path.join(config['output_dir'], config['task_name'], config['rungroup'], config['short_run_name'])
     utils.ensure_dir(config['output_dir']) # Make the output directory if it doesn't exist
