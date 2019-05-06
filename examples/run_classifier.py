@@ -551,8 +551,6 @@ def compute_metrics(task_name, preds, labels):
         return acc_and_f1(preds, labels)
     elif task_name == "mnli":
         return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "mnli-mm":
-        return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "qnli":
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "rte":
@@ -741,6 +739,15 @@ def validate_config():
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
                             config['gradient_accumulation_steps']))
 
+def get_runname_suffix(parser):
+    # Find all arguments (other than those in "to_skip" list) different from the default values, and concatenate them in a string
+    runname_suffix = ''
+    to_skip = ('rungroup', 'task_name', 'freeze_embeddings', 'compresstype', 'bitrate', 'learning_rate', 'seed', 'output_dir', 'data_dir', 'git_repo_dir', 'cache_dir')
+    for key,val in utils.non_default_args(parser, config):
+        if key not in to_skip:
+            runname_suffix += '_{},{}'.format(key,val)
+    return runname_suffix
+
 def init_config(parser):
     global config
     config = vars(parser.parse_args())
@@ -750,8 +757,9 @@ def init_config(parser):
     # 1) Set up run directory and run names
     config['data_dir'] = os.path.join(config['data_dir'], get_upper_case_task_name(config['task_name']))
     config['rungroup'] = '{}-{}'.format(utils.get_date_str(), config['rungroup'])
-    config['short_run_name'] = 'freeze,{}_compresstype,{}_bitrate,{}_lr,{}_seed,{}'.format(
-        config['freeze_embeddings'], config['compresstype'], config['bitrate'], config['learning_rate'], config['seed'])
+    config['short_run_name'] = 'freeze,{}_compresstype,{}_bitrate,{}_lr,{}_seed,{}{}'.format(
+        config['freeze_embeddings'], config['compresstype'], config['bitrate'], config['learning_rate'], config['seed'],
+        get_runname_suffix(parser))
     config['full_run_name'] = '{}_task,{}_{}'.format(config['rungroup'], config['task_name'], config['short_run_name'])
     config['output_dir'] = os.path.join(config['output_dir'], config['task_name'], config['rungroup'], config['short_run_name'])
     utils.ensure_dir(config['output_dir']) # Make the output directory if it doesn't exist
@@ -794,10 +802,15 @@ def init():
 
 def get_data():
     processor = get_processor(config['task_name'])()
+    if config['task_name'] == 'mnli':
+        processor_mm = get_processor('mnli-mm')()
+        eval_examples_mm = processor_mm.get_dev_examples(config['data_dir'])
+    else:
+        eval_examples_mm = None
     train_examples = processor.get_train_examples(config['data_dir'])
     eval_examples = processor.get_dev_examples(config['data_dir'])
     label_list = processor.get_labels()
-    return train_examples, eval_examples, label_list
+    return train_examples, eval_examples, eval_examples_mm, label_list
 
 def get_num_train_optimization_steps(num_train_examples):
     num_train_optimization_steps = int(
@@ -950,9 +963,11 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
     result['eval_loss'] = eval_loss
     return result
 
-def update_full_results(full_results, result, epoch):
+def update_full_results(full_results, result, epoch, mismatch=False):
     is_best_epoch = False
+    mm_str = '_mm' if mismatch else ''
     for k,v in result.items():
+        k = k + mm_str
         if k not in full_results:
             full_results[k] = []
         full_results[k].append(v)
@@ -965,8 +980,8 @@ def update_full_results(full_results, result, epoch):
             if k + '_max' == config['checkpoint_metric']:
                 is_best_epoch = True
     if is_best_epoch:
-        full_results['checkpoint'] = result
-        full_results['best_epoch'] = epoch
+        full_results['checkpoint' + mm_str] = result
+        full_results['best_epoch' + mm_str] = epoch
     return convert_numpy_to_float(full_results)
 
 def convert_numpy_to_float(obj):
@@ -982,7 +997,8 @@ def convert_numpy_to_float(obj):
 
 def main():
     device, n_gpu = init()
-    train_examples, eval_examples, label_list = get_data()
+    # eval_examples_mm is only used when task_name = 'mnli', to evaluate on both matched and mismatched dev sets.
+    train_examples, eval_examples, eval_examples_mm, label_list = get_data()
     output_mode = get_output_mode(config['task_name'])
     tokenizer = BertTokenizer.from_pretrained(
         config['bert_model'],
@@ -997,6 +1013,9 @@ def main():
     Xq, full_results = freeze_and_compress_embeddings(model, device)
 
     train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
+    eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
+    if config['task_name'] == 'mnli':
+        eval_dataloader_mm, eval_label_ids_mm = get_dataloader(eval_examples_mm, label_list, tokenizer, output_mode, train=False)
     for epoch in trange(int(config['num_train_epochs']), desc="Epoch"):
         # Do one epoch of training
         model.train()
@@ -1007,11 +1026,15 @@ def main():
         # Run evaluation
         model.eval()
         logger.info('Epoch #{}: Begin evaluation'.format(epoch))
-        eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
         result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list))
         logger.info('Epoch #{}: Finished evaluation'.format(epoch))
         result['train_loss'] = tr_loss
         full_results = update_full_results(full_results, result, epoch)
+        if config['task_name'] == 'mnli':
+            logger.info('Epoch #{}: Begin evaluation (mismatch)'.format(epoch))
+            result_mm = run_evaluation(model, eval_dataloader_mm, eval_label_ids_mm, output_mode, device, len(label_list))
+            logger.info('Epoch #{}: Finished evaluation (mismatch)'.format(epoch))
+            update_full_results(full_results, result_mm, epoch, mismatch=True)
         utils.save_to_json(full_results, get_filename('_results.json'))
 
     # Assert that after training has completed, embeddings didn't change if config['freeze_embeddings'] is True
