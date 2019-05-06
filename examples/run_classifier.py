@@ -600,7 +600,7 @@ def get_upper_case_task_name(task_name):
         "sts-b": "STS-B",
         "qqp": "QQP",
         "qnli": "QNLI",
-        "rte": "RTI",
+        "rte": "RTE",
         "wnli": "WNLI",
     }
     return upper_case_tasks[task_name]
