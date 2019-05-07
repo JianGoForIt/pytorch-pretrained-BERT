@@ -732,7 +732,7 @@ def validate_config():
     if config['compresstype'] != 'nocompress' and not config['freeze_embeddings']:
         raise ValueError('Can only do compression if freezing embeddings.')
 
-    if config['compresstype'] != 'nocompress' and config['bitrate'] >= 32:
+    if config['compresstype'] not in ('nocompress','pca') and config['bitrate'] >= 32:
         raise ValueError('If compressing, must specify bitrate < 32.')
 
     if config['gradient_accumulation_steps'] < 1:
@@ -1034,6 +1034,7 @@ def main():
             logger.info('Epoch #{}: Begin evaluation (mismatch)'.format(epoch))
             result_mm = run_evaluation(model, eval_dataloader_mm, eval_label_ids_mm, output_mode, device, len(label_list))
             logger.info('Epoch #{}: Finished evaluation (mismatch)'.format(epoch))
+            result_mm['acc_avg'] = (result['acc'] + result_mm['acc'])/2.0
             update_full_results(full_results, result_mm, epoch, mismatch=True)
         utils.save_to_json(full_results, get_filename('_results.json'))
 
