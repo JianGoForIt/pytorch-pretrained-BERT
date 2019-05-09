@@ -19,6 +19,7 @@ from __future__ import absolute_import, division, print_function
 
 import argparse
 import csv
+import glob
 import logging
 import os
 import random
@@ -603,6 +604,13 @@ def get_upper_case_task_name(task_name):
     }
     return upper_case_tasks[task_name]
 
+def get_dca_embedding_path(b, seed):
+    path_regex = '/proj/smallfry/embeddings/bert-base-cased/2019-05-09-BertDcclFiveSeeds/embeddim,768_compresstype,dca_bitrate,{}.0_seed,{}_k,*_lr,0.0003/*_compressed_embeds.txt'
+    path_regex = path_regex.format(int(b),int(seed))
+    file_list = glob.glob(path_regex)
+    assert len(file_list) == 1, 'There should only be one embedding matching this regex'
+    return file_list[0]
+
 def compress_embeddings(X, b, compress_type, seed):
     logger.info('Beginning to compress embeddings')
     if compress_type == 'uniform':
@@ -612,6 +620,10 @@ def compress_embeddings(X, b, compress_type, seed):
     elif compress_type == 'pca':
         pca_dim = int(X.shape[1] * b / 32.0)
         Xq, frob_squared_error, elapsed = compress.compress_pca(X, pca_dim, keep_v=True)
+    elif compress_type == 'dca':
+        Xq,_ = utils.load_embeddings(get_dca_embedding_path(b, seed))
+        frob_squared_error = np.linalg.norm(X-Xq)**2
+        elapsed = 0
     else:
         raise Exception('Other compress types not yet supported.')
     logger.info('Done compressing embeddings. Elapsed = {}, Frob-squared-error = {}'.format(elapsed, frob_squared_error))
