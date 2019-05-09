@@ -1052,7 +1052,9 @@ def main():
 
     # Assert that after training has completed, embeddings didn't change if config['freeze_embeddings'] is True
     if config['freeze_embeddings']:
-        assert np.array_equal(Xq, model.bert.embeddings.word_embeddings.weight.detach().cpu().numpy()), 'Embeddings changed during training.'
+        X_final = model.bert.embeddings.word_embeddings.weight.detach().cpu().numpy()
+        logger.info('Difference between embeddings at beginning vs end of training: {}'.format(np.linalg.norm(Xq-X_final)))
+        assert np.allclose(Xq, X_final), 'Embeddings changed during training.'
 
     # Save model, tokenizer, final results, and final config.
     save_model_and_tokenizer(model, tokenizer)
