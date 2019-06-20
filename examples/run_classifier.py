@@ -405,6 +405,64 @@ class WnliProcessor(DataProcessor):
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
 
+class BertActivationMonitor(object):
+    def __init__(self, model_to_monitor, save_dir, nbin=5000, hist_min=-100.0, hist_max=100.0):
+        self.model = model_to_monitor
+        self.save_dir = save_dir
+        self.embedding_out_hist = None
+        self.sequence_out_hist_list = None
+        self.pooled_out_hist = None
+        self.nbin = nbin
+        self.hist_min = hist_min
+        self.hist_max = hist_max
+        # file suffix for saved histogram
+        self.save_suffix = "init"
+
+    def clear_histogram(self):
+        self.embedding_out_hist = None
+        self.sequence_out_hist_list = None
+        self.pooled_out_hist = None
+
+    def update_histogram(self):
+        # embedding output activation
+        cur_hist = torch.histc(self.model.embedding_output.data.detach().cpu(), 
+            bins=self.nbin, min=self.hist_min, max=self.hist_max)
+        if self.embedding_out_hist is None:
+            self.embedding_out_hist = cur_hist
+        else:
+            self.embedding_out_hist += cur_hist
+        # list of activation from different transformer layers
+        if self.sequence_out_hist_list is None:
+            self.sequence_out_hist_list = \
+                [torch.histc(x.data.detach().cpu(), bins=self.nbin, min=self.hist_min, max=self.hist_max) \
+                for x in self.model.sequence_output]
+        else:
+            self.sequence_out_hist_list = \
+                [y + torch.histc(x.data.detach().cpu(), bins=self.nbin, min=self.hist_min, max=self.hist_max) \
+                for x, y in zip(self.model.sequence_output, self.sequence_out_hist_list)]
+        cur_hist = torch.histc(self.model.pooled_output.data.detach().cpu(), 
+            bins=self.nbin, min=self.hist_min, max=self.hist_max)
+        if self.pooled_out_hist is None:
+            self.pooled_out_hist = cur_hist
+        else:
+            self.pooled_out_hist += cur_hist
+
+
+    def save_histogram(self, save_suffix):
+        # save embedding_histogram
+        filename = os.path.join(self.save_dir, "embed_act_{}.npy".format(save_suffix))
+        np.save(filename, self.embedding_out_hist.data.detach().cpu().numpy())
+        # save transformer layer activation histogram
+        assert len(self.sequence_out_hist_list) == 12
+        filename = os.path.join(self.save_dir, "encoder_act_{}.npz".format(save_suffix))
+        np.savez(filename, *[x.data.detach().cpu().numpy() for x in self.sequence_out_hist_list])
+        # save pooled histogram
+        filename = os.path.join(self.save_dir, "pooled_act_{}.npy".format(save_suffix))
+        np.save(filename, self.pooled_out_hist.data.detach().cpu().numpy())
+        # save histogram hyperparameter
+        filename = os.path.join(self.save_dir, "hist_hyperparam_{}.npy".format(save_suffix))
+        np.save(filename, np.array([self.hist_min, self.hist_max, self.nbin]))
+
 
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode):
@@ -735,6 +793,9 @@ def init_parser():
                         type=int,
                         default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
+    parser.add_argument('--activation-histogram',
+                        action='store_true',
+                        help="record the activation histogram at end of each epoch")
     return parser
 
 def get_filename(suffix):
@@ -777,7 +838,10 @@ def init_config(parser):
     utils.ensure_dir(config['output_dir']) # Make the output directory if it doesn't exist
 
     # 2) Add important entries into final config dictionary
-    git_hash, git_diff = utils.get_git_hash_and_diff(config['git_repo_dir'], log=False, debug=config['debug'])
+    if not config['debug']:
+        git_hash, git_diff = utils.get_git_hash_and_diff(config['git_repo_dir'], log=False)
+    else:
+        git_hash, git_diff = '', ''
     config['git_hash'] = git_hash
     config['git_diff'] = git_diff
     config['train_batch_size'] = config['train_batch_size'] // config['gradient_accumulation_steps']
@@ -935,10 +999,13 @@ def run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, devi
             num_steps += 1
     return tr_loss/num_steps
 
-def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, num_labels):
+def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, num_labels, epoch_id=0):
     eval_loss = 0
     num_steps = 0
     preds = []
+
+    if config['activation_histogram']:
+        model.activation_monitor.clear_histogram()
 
     for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
         input_ids = input_ids.to(device)
@@ -948,6 +1015,9 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
 
         with torch.no_grad():
             logits = model(input_ids, segment_ids, input_mask, labels=None)
+            # we update the activation histogram if necessary
+            if config['activation_histogram']:
+                model.activation_monitor.update_histogram()
 
         # create eval loss and other metric required by the task
         if output_mode == "classification":
@@ -964,6 +1034,10 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
         else:
             preds[0] = np.append(
                 preds[0], logits.detach().cpu().numpy(), axis=0)
+
+    # we save the activation histogram if activation_histogram is True
+    if config['activation_histogram']:
+        model.activation_monitor.save_histogram(save_suffix="epoch_{}".format(epoch_id))
 
     eval_loss = eval_loss / num_steps
     preds = preds[0]
@@ -1021,6 +1095,20 @@ def main():
     model = get_model(len(label_list), device, n_gpu)
     optimizer = get_optimizer(model, len(train_examples))
 
+    # if monitoring activation histogram, we hook a monitor to the model
+    act_hist_save_path = config['output_dir']
+    activation_monitor = BertActivationMonitor(model, act_hist_save_path)
+    model.activation_monitor = activation_monitor
+
+    if config['activation_histogram']:
+        # if monitoring activation histogram, we will report the initial performance here
+        model.eval()
+        logger.info('Evaluation before fine-tuning: Begin evaluation')
+        eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
+        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=-1)
+        print(result)
+        logger.info('Evaluation before fine-tuning: Finished evaluation')
+
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
     Xq, full_results = freeze_and_compress_embeddings(model, device)
 
@@ -1030,7 +1118,7 @@ def main():
         eval_dataloader_mm, eval_label_ids_mm = get_dataloader(eval_examples_mm, label_list, tokenizer, output_mode, train=False)
     for epoch in trange(int(config['num_train_epochs']), desc="Epoch"):
         # Do one epoch of training
-        model.train()
+        model.train() 
         logger.info('Epoch #{}: Begin training'.format(epoch))
         tr_loss = run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, device, len(label_list))
         logger.info('Epoch #{}: Finished training'.format(epoch))
@@ -1038,7 +1126,7 @@ def main():
         # Run evaluation
         model.eval()
         logger.info('Epoch #{}: Begin evaluation'.format(epoch))
-        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list))
+        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=epoch)
         logger.info('Epoch #{}: Finished evaluation'.format(epoch))
         result['train_loss'] = tr_loss
         full_results = update_full_results(full_results, result, epoch)

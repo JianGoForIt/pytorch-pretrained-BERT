@@ -733,6 +733,13 @@ class BertModel(BertPreTrainedModel):
                                       output_all_encoded_layers=output_all_encoded_layers)
         sequence_output = encoded_layers[-1]
         pooled_output = self.pooler(sequence_output)
+        # We add the following lines to monitor the histogram of different output activation
+        # we pass the tensors out to the BertForSequenceClassification class. The outside activation monitor 
+        # will process these activation as member variables of BertForSequenceClassification class
+        self.embedding_output = embedding_output
+        self.sequence_output = encoded_layers # TODO change the name of sequence output to encoder_output consistently across everywhere
+        self.pooled_output = pooled_output
+        # the block would be processed by BertActivationMonitor defined in run_classifier.py
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
         return encoded_layers, pooled_output
@@ -986,7 +993,13 @@ class BertForSequenceClassification(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True)
+        
+        # we wire out the activations so that we can plot the histogram
+        self.embedding_output = self.bert.embedding_output
+        self.sequence_output = self.bert.sequence_output
+        self.pooled_output = self.bert.pooled_output
+
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 
