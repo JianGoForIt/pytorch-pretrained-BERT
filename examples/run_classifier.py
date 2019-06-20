@@ -1095,12 +1095,11 @@ def main():
     model = get_model(len(label_list), device, n_gpu)
     optimizer = get_optimizer(model, len(train_examples))
 
-    # if monitoring activation histogram, we hook a monitor to the model
-    act_hist_save_path = config['output_dir']
-    activation_monitor = BertActivationMonitor(model, act_hist_save_path)
-    model.activation_monitor = activation_monitor
-
     if config['activation_histogram']:
+        # if monitoring activation histogram, we hook a monitor to the model
+        act_hist_save_path = config['output_dir']
+        activation_monitor = BertActivationMonitor(model, act_hist_save_path)
+        model.activation_monitor = activation_monitor
         # if monitoring activation histogram, we will report the initial performance here
         model.eval()
         logger.info('Evaluation before fine-tuning: Begin evaluation')
@@ -1110,7 +1109,8 @@ def main():
         logger.info('Evaluation before fine-tuning: Finished evaluation')
 
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
-    Xq, full_results = freeze_and_compress_embeddings(model, device)
+    if config['freeze_embeddings']:
+        Xq, full_results = freeze_and_compress_embeddings(model, device)
 
     train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
     eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
