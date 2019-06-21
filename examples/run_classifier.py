@@ -1008,7 +1008,7 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
     if config['activation_histogram']:
         model.activation_monitor.clear_histogram()
 
-    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+    for step, (input_ids, input_mask, segment_ids, label_ids) in enumerate(tqdm(eval_dataloader, desc="Evaluating")):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
@@ -1036,6 +1036,9 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
             preds[0] = np.append(
                 preds[0], logits.detach().cpu().numpy(), axis=0)
 
+        # if step == 99:
+        #     break
+
     # we save the activation histogram if activation_histogram is True
     if config['activation_histogram']:
         model.activation_monitor.save_histogram(save_suffix="epoch_{}".format(epoch_id))
@@ -1046,7 +1049,10 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
         preds = np.argmax(preds, axis=1)
     elif output_mode == "regression":
         preds = np.squeeze(preds)
-    result = compute_metrics(config['task_name'], preds, eval_label_ids.numpy())
+    if config['activation_histogram']:
+        result = {}
+    else:
+        result = compute_metrics(config['task_name'], preds, eval_label_ids.numpy())
     result['eval_loss'] = eval_loss
     return result
 
@@ -1104,8 +1110,13 @@ def main():
         # if monitoring activation histogram, we will report the initial performance here
         model.eval()
         logger.info('Evaluation before fine-tuning: Begin evaluation')
-        eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
-        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=-1)
+        train_dataloader, train_label_ids = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
+        # note for training set the run_evaluation would not give the right evaluation metric
+        # because train dataloader is shuffled while train_label_ids not. We only use train set
+        # here to test if we can use a subset of tokens to get similar entry histogram and then determine the clipping threshold
+        result = run_evaluation(model, train_dataloader, train_label_ids, output_mode, device, len(label_list), epoch_id=-1)
+        # eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
+        # result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=-1)
         print(result)
         logger.info('Evaluation before fine-tuning: Finished evaluation')
 
@@ -1115,7 +1126,7 @@ def main():
     else:
         full_results = {}
 
-    train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
+    train_dataloader, train_label_ids = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
     eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
     if config['task_name'] == 'mnli':
         eval_dataloader_mm, eval_label_ids_mm = get_dataloader(eval_examples_mm, label_list, tokenizer, output_mode, train=False)
@@ -1129,7 +1140,10 @@ def main():
         # Run evaluation
         model.eval()
         logger.info('Epoch #{}: Begin evaluation'.format(epoch))
-        result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=epoch)
+        if config['activation_histogram']:
+            result = run_evaluation(model, train_dataloader, train_label_ids, output_mode, device, len(label_list), epoch_id=epoch)
+        else:
+            result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=epoch)
         logger.info('Epoch #{}: Finished evaluation'.format(epoch))
         result['train_loss'] = tr_loss
         full_results = update_full_results(full_results, result, epoch)
