@@ -41,7 +41,8 @@ from pytorch_pretrained_bert.modeling import BertForSequenceClassification, Bert
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 from smallfry import compress
-from smallfry import utils
+# from smallfry import utils
+from ccompression import utils
 
 
 logger = logging.getLogger(__name__)
@@ -1111,6 +1112,8 @@ def main():
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
     if config['freeze_embeddings']:
         Xq, full_results = freeze_and_compress_embeddings(model, device)
+    else:
+        full_results = {}
 
     train_dataloader,_ = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
     eval_dataloader, eval_label_ids = get_dataloader(eval_examples, label_list, tokenizer, output_mode, train=False)
