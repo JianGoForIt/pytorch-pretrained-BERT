@@ -43,10 +43,14 @@ from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 from smallfry import compress
 # from smallfry import utils
 from ccompression import utils
+# from ccompression import quantization_utils
+from ccompression.quantization_utils import setup_bert_fw_bw_quant_transformer_act
+from ccompression.quantization_utils import turn_on_bert_fw_bw_quant_transformer_act
 
 
 logger = logging.getLogger(__name__)
 config = {}
+BERT_BASE_DIM = 768
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -797,6 +801,13 @@ def init_parser():
     parser.add_argument('--activation-histogram',
                         action='store_true',
                         help="record the activation histogram at end of each epoch")
+    parser.add_argument('--activation-nbit', 
+                        type=int,
+                        help="number of bits used to represent each activation entry")
+    parser.add_argument('--quantize-transformer-act-layer-ids', nargs='*', type=int,
+        help='transformer layer id where we quantize the activations')
+    parser.add_argument('--n-quantizer-setup-minibatch', type=int, default=25,
+        help='number of minibatches used for setup uniform quantizer')
     return parser
 
 def get_filename(suffix):
@@ -1000,7 +1011,7 @@ def run_train_epoch(model, train_dataloader, optimizer, output_mode, n_gpu, devi
             num_steps += 1
     return tr_loss/num_steps
 
-def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, num_labels, epoch_id=0):
+def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, num_labels, epoch_id=0, do_subset=False):
     eval_loss = 0
     num_steps = 0
     preds = []
@@ -1008,7 +1019,7 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
     if config['activation_histogram']:
         model.activation_monitor.clear_histogram()
 
-    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+    for step, (input_ids, input_mask, segment_ids, label_ids) in enumerate(tqdm(eval_dataloader, desc="Evaluating")):
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
@@ -1036,6 +1047,11 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
             preds[0] = np.append(
                 preds[0], logits.detach().cpu().numpy(), axis=0)
 
+        # this is only for seting up quantization clipping threshold
+        # we use 100 minibatch to determine the clipping threshold
+        if do_subset and step == config["n_quantizer_setup_minibatch"] - 1:
+            break
+
     # we save the activation histogram if activation_histogram is True
     if config['activation_histogram']:
         model.activation_monitor.save_histogram(save_suffix="epoch_{}".format(epoch_id))
@@ -1046,7 +1062,11 @@ def run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, 
         preds = np.argmax(preds, axis=1)
     elif output_mode == "regression":
         preds = np.squeeze(preds)
-    result = compute_metrics(config['task_name'], preds, eval_label_ids.numpy())
+    if do_subset:
+        # this is only for seting up quantization clipping threshold
+        result = {}
+    else:
+        result = compute_metrics(config['task_name'], preds, eval_label_ids.numpy())
     result['eval_loss'] = eval_loss
     return result
 
@@ -1108,6 +1128,16 @@ def main():
         result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=-1)
         print(result)
         logger.info('Evaluation before fine-tuning: Finished evaluation')
+    if len(config["quantize_transformer_act_layer_ids"]) != 0:
+        train_dataloader, train_label_ids = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
+        setup_bert_fw_bw_quant_transformer_act(model, config["activation_nbit"],
+            config["quantize_transformer_act_layer_ids"], 
+            sample_act_shape=(config['train_batch_size'] * config['n_quantizer_setup_minibatch'], 
+                config['max_seq_length'], BERT_BASE_DIM))
+        model.eval()
+        _ = run_evaluation(model, train_dataloader, train_label_ids, 
+            output_mode, device, len(label_list), epoch_id=-1, do_subset=True)
+        turn_on_bert_fw_bw_quant_transformer_act(model, config["quantize_transformer_act_layer_ids"])
 
     # if config['freeze_embeddings'] is true, freeze and then optionally compress embeddings.
     if config['freeze_embeddings']:
