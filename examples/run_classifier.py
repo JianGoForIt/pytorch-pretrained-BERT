@@ -1128,7 +1128,7 @@ def main():
         result = run_evaluation(model, eval_dataloader, eval_label_ids, output_mode, device, len(label_list), epoch_id=-1)
         print(result)
         logger.info('Evaluation before fine-tuning: Finished evaluation')
-    if len(config["quantize_transformer_act_layer_ids"]) != 0:
+    if config["quantize_transformer_act_layer_ids"] is not None:
         train_dataloader, train_label_ids = get_dataloader(train_examples, label_list, tokenizer, output_mode, train=True)
         setup_bert_fw_bw_quant_transformer_act(model, config["activation_nbit"],
             config["quantize_transformer_act_layer_ids"], 

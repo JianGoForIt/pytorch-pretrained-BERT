@@ -391,6 +391,7 @@ class BertLayer(nn.Module):
         attention_output = self.attention(hidden_states, attention_mask)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
+        # print("forward done ", layer_output.data_ptr)
         return layer_output
 
 
