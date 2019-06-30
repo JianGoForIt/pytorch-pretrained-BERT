@@ -59,7 +59,12 @@ def load_tf_weights_in_bert(model, tf_checkpoint_path):
         print("Loading a TensorFlow models in PyTorch, requires TensorFlow to be installed. Please see "
             "https://www.tensorflow.org/install/ for installation instructions.")
         raise
-    tf_path = os.path.abspath(tf_checkpoint_path)
+    if tf_checkpoint_path.startswith("gs:"):
+        # this is for the case of reading from gcloud bucket
+        tf_path = tf_checkpoint_path
+    else:
+        tf_path = os.path.abspath(tf_checkpoint_path)
+
     print("Converting TensorFlow checkpoint from {}".format(tf_path))
     # Load weights from TF model
     init_vars = tf.train.list_variables(tf_path)
