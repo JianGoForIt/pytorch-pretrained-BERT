@@ -335,7 +335,15 @@ class BertSelfOutput(nn.Module):
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
+
+        print("attention output ", hidden_states, input_tensor)
+        # self.LayerNorm.bias.data.fill_(0.0)
+
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        
+        print("attention output 2 ", hidden_states, input_tensor, 
+            self.LayerNorm.variance_epsilon, self.LayerNorm.bias, self.LayerNorm.weight)
+
         return hidden_states
 
 
@@ -389,9 +397,18 @@ class BertLayer(nn.Module):
 
     def forward(self, hidden_states, attention_mask):
         attention_output = self.attention(hidden_states, attention_mask)
+            
+        # attention_output = attention_output.fill_(0.0)
+        # print("attention output ", attention_output)
+
         intermediate_output = self.intermediate(attention_output)
+        
+        print("intermediate output ", intermediate_output)
+
         layer_output = self.output(intermediate_output, attention_output)
-        # print("forward done ", layer_output.data_ptr)
+        
+        print("layer done ", layer_output)
+        
         return layer_output
 
 
@@ -410,6 +427,22 @@ class BertEncoder(nn.Module):
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
+
+    # def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True):
+    #     all_encoder_layers = []
+    #     for i, layer_module in enumerate(self.layer):
+    #         hidden_states = layer_module(hidden_states, attention_mask)
+    #         # print("double test ")
+    #         if i == 0:
+    #             print("inside test ")
+    #             hidden_states[:, -2:, :] = hidden_states[:, -2:, :] * 0.0
+    #             # print(hidden_states, hidden_states.size())
+    #         if output_all_encoded_layers:
+    #             # print("inside test 2")
+    #             all_encoder_layers.append(hidden_states)
+    #     if not output_all_encoded_layers:
+    #         all_encoder_layers.append(hidden_states)
+    #     return all_encoder_layers
 
 
 class BertPooler(nn.Module):
