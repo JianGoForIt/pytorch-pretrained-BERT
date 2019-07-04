@@ -56,7 +56,8 @@ setup(
                       'tqdm',
                       'regex',
                       'scipy',
-                      'sklearn'],
+                      'sklearn', 
+                      'scipy'],
     entry_points={
       'console_scripts': [
         "pytorch_pretrained_bert=pytorch_pretrained_bert.__main__:main",

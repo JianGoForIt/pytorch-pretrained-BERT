@@ -39,10 +39,11 @@ logger = logging.getLogger(__name__)
 
 class InputExample(object):
 
-    def __init__(self, unique_id, text_a, text_b):
+    def __init__(self, unique_id, text_a, text_b, label=None):
         self.unique_id = unique_id
         self.text_a = text_a
         self.text_b = text_b
+        self.label = label
 
 
 class InputFeatures(object):
@@ -146,6 +147,17 @@ def convert_examples_to_features(examples, seq_length, tokenizer):
                 input_type_ids=input_type_ids))
     return features
 
+def convert_examples_to_labels_for_sentiment_analysis(examples):
+    labels = []
+    for (ex_index, example) in enumerate(examples):
+        labels.append(example.label)
+        if ex_index > 5 and ex_index < 10:
+            logger.info("*** Example ***")
+            logger.info("unique_id: %s" % (example.unique_id))
+            logger.info("text a: " + str(example.text_a))
+            logger.info("text b: " + str(example.text_b))
+            logger.info("label: " + str(labels[-1]))
+    return labels
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
@@ -187,6 +199,27 @@ def read_examples(input_file):
             unique_id += 1
     return examples
 
+def read_examples_for_sentiment_analysis(input_file):
+    """Read sentiment analysis tasks data"""
+    examples = []
+    labels = []
+    unique_id = 0
+    with open(input_file, "r", encoding='utf-8') as reader:
+        while True:
+            line = reader.readline()
+            if not line:
+                break
+            line = line.strip()
+            line_parts = line.split(" ")
+            # the first information from the line is the label
+            line = " ".join(line_parts[1:])
+            text_a = line
+            text_b = None
+            # we assume here label is a int number
+            examples.append(
+                InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b, label=int(line_parts[0])))
+            unique_id += 1
+    return examples
 
 def main():
     parser = argparse.ArgumentParser()
@@ -212,6 +245,9 @@ def main():
     parser.add_argument("--no_cuda",
                         action='store_true',
                         help="Whether not to use CUDA when available")
+    parser.add_argument("--for_sentiment",
+                        action='store_true',
+                        help="Process feature for sentiment analysis tasks")
 
     args = parser.parse_args()
 
@@ -227,12 +263,22 @@ def main():
 
     layer_indexes = [int(x) for x in args.layers.split(",")]
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+    if args.for_sentiment:
+        # when for sentiment mode, we assume path instead of model name are given
+        tokenizer = BertTokenizer.from_pretrained(args.bert_model + "/vocab.txt", do_lower_case=args.do_lower_case)
+    else:
+        tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
-    examples = read_examples(args.input_file)
+    if args.for_sentiment:
+        examples = read_examples_for_sentiment_analysis(args.input_file)
+    else:
+        examples = read_examples(args.input_file)
 
     features = convert_examples_to_features(
         examples=examples, seq_length=args.max_seq_length, tokenizer=tokenizer)
+    if args.for_sentiment:
+        labels = convert_examples_to_labels_for_sentiment_analysis(examples)
+        assert len(examples) == len(labels)
 
     unique_id_to_feature = {}
     for feature in features:
@@ -273,6 +319,9 @@ def main():
                 # feature = unique_id_to_feature[unique_id]
                 output_json = collections.OrderedDict()
                 output_json["linex_index"] = unique_id
+                if args.for_sentiment:
+                    # we need to save label if we are processing the sentiment analysis data files
+                    output_json["label"] = labels[example_index]
                 all_out_features = []
                 for (i, token) in enumerate(feature.tokens):
                     all_layers = []
@@ -291,6 +340,8 @@ def main():
                     all_out_features.append(out_features)
                 output_json["features"] = all_out_features
                 writer.write(json.dumps(output_json) + "\n")
+                print("{} example processed for input {} / output {} / model {}".format(example_index, 
+                    args.input_file, args.output_file, args.bert_model))
 
 
 if __name__ == "__main__":
