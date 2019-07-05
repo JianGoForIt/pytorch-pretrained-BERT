@@ -207,21 +207,26 @@ def read_examples_for_sentiment_analysis(input_file):
     examples = []
     labels = []
     unique_id = 0
-    with open(input_file, "r", encoding='utf-8') as reader:
-        while True:
-            line = reader.readline()
-            if not line:
-                break
-            line = line.strip()
-            line_parts = line.split(" ")
-            # the first information from the line is the label
-            line = " ".join(line_parts[1:])
-            text_a = line
-            text_b = None
-            # we assume here label is a int number
-            examples.append(
-                InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b, label=int(line_parts[0])))
-            unique_id += 1
+    if "sst" in input_file:
+        reader = open(input_file, "r", encoding='ISO-8859-1')
+    else: 
+        reader = open(input_file, "r", encoding='utf-8')
+    # with open(input_file, "r", encoding='utf-8') as reader:
+    while True:
+        line = reader.readline()
+        if not line:
+            break
+        line = line.strip()
+        line_parts = line.split(" ")
+        # the first information from the line is the label
+        line = " ".join(line_parts[1:])
+        text_a = line
+        text_b = None
+        # we assume here label is a int number
+        examples.append(
+            InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b, label=int(line_parts[0])))
+        unique_id += 1
+    reader.close()
     return examples
 
 def main():
