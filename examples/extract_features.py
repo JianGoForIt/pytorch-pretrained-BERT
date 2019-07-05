@@ -329,7 +329,8 @@ def main():
 
             if args.for_sentiment:
                 # for sentiment analysis task, we directly save tensor, but we only save the last layer
-                assert len(all_encoder_layers[-1]) > 1, " not in all layer output mode!"
+                print(len(all_encoder_layers), type(all_encoder_layers[-1]), all_encoder_layers[-1].size())
+                assert len(all_encoder_layers) > 1, " not in all layer output mode!"
                 feature_list.append(all_encoder_layers[-1].detach().cpu().numpy())
             else:
                 for b, example_index in enumerate(example_indices):
