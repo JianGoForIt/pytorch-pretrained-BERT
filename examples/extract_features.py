@@ -319,7 +319,7 @@ def main():
     if args.for_sentiment:
         feature_list = []
     with open(args.output_file, "w", encoding='utf-8') as writer:
-        for input_ids, input_mask, example_indices in eval_dataloader:
+        for batch_id, (input_ids, input_mask, example_indices) in enumerate(eval_dataloader):
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
 
@@ -333,8 +333,8 @@ def main():
                      # for (i, token) in enumerate(feature.tokens):
                     assert len(layer_indexes) == 1, "pytorch feat save only support a single layer output"
                     feat_output = all_encoder_layers[layer_indexes[0]][b]
-                    feature_list.append(feat_output[:len(feature.tokens)].clone())
-                    print("test token ", feature.tokens, feature_list[-1].size(), feat_output.size())
+                    feature_list.append(feat_output[:len(feature.tokens)].clone().detach().cpu().numpy())
+                    print("test token ", feature.tokens, len(feature_list), feature_list[-1].shape, feat_output.size())
                 else:
                     # feature = unique_id_to_feature[unique_id]
                     output_json = collections.OrderedDict()
@@ -366,20 +366,20 @@ def main():
     # we also need to save the labels
     if args.for_sentiment:
         ## pytorch version of the results
-        f_name = args.output_file
-        torch.save(feature_list, f_name)
-        f_name = args.output_file.replace(".feature", ".label")
-        torch.save(torch.LongTensor(labels), f_name)
+        # f_name = args.output_file
+        # torch.save(feature_list, f_name)
+        # f_name = args.output_file.replace(".feature", ".label")
+        # torch.save(torch.LongTensor(labels), f_name)
 
         ## npy version of the results
-        # assert ".feature" in args.output_file
-        # f_name = args.output_file
-        # feature_output = np.concatenate(feature_list, axis=0)
-        # # print("test ", feature_output.shape)
-        # np.save(f_name, feature_output)
-        # label_output = np.array(labels)
-        # f_name = args.output_file.replace(".feature", ".label")
-        # np.save(f_name, label_output)
+        assert ".feature" in args.output_file
+        assert ".npz" in args.output_file
+        f_name = args.output_file
+        np.savez(f_name, *feature_list)
+
+        label_output = np.array(labels)
+        f_name = args.output_file.replace(".feature", ".label").replace(".npz", ".npy")
+        np.save(f_name, label_output)
 
         ## json version of the results
         # f_name = args.output_file.replace(".feature", ".label")
