@@ -327,54 +327,61 @@ def main():
             all_encoder_layers, _ = model(input_ids, token_type_ids=None, attention_mask=input_mask)
             all_encoder_layers = all_encoder_layers
 
-            if args.for_sentiment:
-                # for sentiment analysis task, we directly save tensor, but we only save the last layer
-                print(len(all_encoder_layers), type(all_encoder_layers[-1]), all_encoder_layers[-1].size())
-                assert len(all_encoder_layers) > 1, " not in all layer output mode!"
-                feature_list.append(all_encoder_layers[-1].detach().cpu().numpy())
-            else:
-                for b, example_index in enumerate(example_indices):
-                    feature = features[example_index.item()]
-                    unique_id = int(feature.unique_id)
-                    # feature = unique_id_to_feature[unique_id]
-                    output_json = collections.OrderedDict()
-                    output_json["linex_index"] = unique_id
-                    if args.for_sentiment:
-                        # we need to save label if we are processing the sentiment analysis data files
-                        output_json["label"] = labels[example_index]
-                    all_out_features = []
-                    for (i, token) in enumerate(feature.tokens):
-                        all_layers = []
-                        for (j, layer_index) in enumerate(layer_indexes):
-                            layer_output = all_encoder_layers[int(layer_index)].detach().cpu().numpy()
-                            layer_output = layer_output[b]
-                            layers = collections.OrderedDict()
-                            layers["index"] = layer_index
-                            layers["values"] = [
-                                round(x.item(), 6) for x in layer_output[i]
-                            ]
-                            # print("layer shape ", layer_output.shape, all_encoder_layers[int(layer_index)].shape)
-                            all_layers.append(layers)
-                        out_features = collections.OrderedDict()
-                        out_features["token"] = token
-                        out_features["layers"] = all_layers
-                        all_out_features.append(out_features)
-                    output_json["features"] = all_out_features
-                    writer.write(json.dumps(output_json) + "\n")
-                    print("{} example processed for input {} / output {} / model {}".format(example_index, 
-                        args.input_file, args.output_file, args.bert_model))            
+            # if args.for_sentiment:
+            #     # for sentiment analysis task, we directly save tensor, but we only save the last layer
+            #     print(len(all_encoder_layers), type(all_encoder_layers[-1]), all_encoder_layers[-1].size())
+            #     assert len(all_encoder_layers) > 1, " not in all layer output mode!"
+            #     feature_list.append(all_encoder_layers[-1].detach().cpu().numpy())
+            # else:
+            for b, example_index in enumerate(example_indices):
+                feature = features[example_index.item()]
+                unique_id = int(feature.unique_id)
+                # feature = unique_id_to_feature[unique_id]
+                output_json = collections.OrderedDict()
+                output_json["linex_index"] = unique_id
+                if args.for_sentiment:
+                    # we need to save label if we are processing the sentiment analysis data files
+                    output_json["label"] = labels[example_index]
+                all_out_features = []
+                for (i, token) in enumerate(feature.tokens):
+                    all_layers = []
+                    for (j, layer_index) in enumerate(layer_indexes):
+                        layer_output = all_encoder_layers[int(layer_index)].detach().cpu().numpy()
+                        layer_output = layer_output[b]
+                        layers = collections.OrderedDict()
+                        layers["index"] = layer_index
+                        layers["values"] = [
+                            round(x.item(), 6) for x in layer_output[i]
+                        ]
+                        # print("layer shape ", layer_output.shape, all_encoder_layers[int(layer_index)].shape)
+                        all_layers.append(layers)
+                    out_features = collections.OrderedDict()
+                    out_features["token"] = token
+                    out_features["layers"] = all_layers
+                    all_out_features.append(out_features)
+                output_json["features"] = all_out_features
+                writer.write(json.dumps(output_json) + "\n")
+                print("{} example processed for input {} / output {} / model {}".format(example_index, 
+                    args.input_file, args.output_file, args.bert_model))            
 
     # if we are getting features for the sentiment analysis task,
     # we also need to save the labels
     if args.for_sentiment:
-        assert ".feature" in args.output_file
-        f_name = args.output_file
-        feature_output = np.concatenate(feature_list, axis=0)
-        # print("test ", feature_output.shape)
-        np.save(f_name, feature_output)
-        label_output = np.array(labels)
+        ## npy version of the results
+        # assert ".feature" in args.output_file
+        # f_name = args.output_file
+        # feature_output = np.concatenate(feature_list, axis=0)
+        # # print("test ", feature_output.shape)
+        # np.save(f_name, feature_output)
+        # label_output = np.array(labels)
+        # f_name = args.output_file.replace(".feature", ".label")
+        # np.save(f_name, label_output)
+        ## json version of the results
         f_name = args.output_file.replace(".feature", ".label")
-        np.save(f_name, label_output)
+        with open(f_name, "w", encoding='utf-8') as writer:
+            writer.write(json.dumps(labels))
+
+
 
 
 if __name__ == "__main__":
